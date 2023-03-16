@@ -1,0 +1,20 @@
+# Experiments data and results
+/data/
+/models/
+/reports/
+/results/
+/utils/
+/sort_stats.csv
+
+# Temp data in root directory
+.ipynb_checkpoints
+
+# Temp data in rtaUtils package
+/rtaUtils/.*
+
+#########################################
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
