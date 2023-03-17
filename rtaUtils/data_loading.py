@@ -25,8 +25,9 @@ def load_raw_data_sort(date: datetime.datetime) -> tuple[pd.DataFrame, pd.DataFr
     data = (data.drop_duplicates(subset=['fpId','timestamp'], keep='first')
                 .drop_duplicates(subset=['latitude', 'longitude'], keep='first')
                 .sort_values(by=['fpId','timestamp'])
-                .reset_index(drop=True).reset_index()
-                .rename({'index':'ordenInicial'}, axis=1))
+                .reset_index(drop=True)
+                # .reset_index().rename({'index':'ordenInicial'}, axis=1)
+                )
     return data
 
 def calculate_indexes(flights: pd.DataFrame) -> pd.DataFrame:

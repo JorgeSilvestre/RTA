@@ -3,14 +3,14 @@ import datetime
 import time
 import warnings
 
-warnings.simplefilter("ignore", category=FutureWarning)
-
 import numpy as np
 import pandas as pd
 
 import data_loading
 from common import haversine_np
 from paths import *
+
+warnings.simplefilter("ignore", category=FutureWarning)
 
 # Test path
 # sorted_data_path = Path('../data/sorted2')
@@ -107,7 +107,7 @@ def sort_windows_numpy(array: np.array, windows: tuple, angle: bool = False) -> 
     for it, start, end in windows:
         data = array[start:end].copy()
         # [6,5,7] en lugar de [5,4,6] según col_sort, porque añadimos el index al comienzo
-        current_dist = initial_dist = distance(data[:,[5,6,7]], angle).sum()
+        current_dist = initial_dist = distance(data[:,[4,5,6]], angle).sum()
 
         # Ojo: índices relativos a la ventana, no a data entero
         changes = generate_changes(0, end-start, skip = 2 if angle else 1)
@@ -143,18 +143,20 @@ def calculate_rotation(tracks: pd.Series) -> float:
     return track_variation
 
 
-def sort_by_position(data: pd.DataFrame, stats: dict, remove_ground_vectors: bool = False) -> tuple[pd.DataFrame, float]:
+def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) -> tuple[pd.DataFrame, float]:
     '''
         Ordena las filas de un dataframe de acuerdo a su latitud y longitud. Mantiene el 
         índice original (el orden anterior queda registrado en la columna ordenInicial)
         
         data : pd.DataFrame
             Dataframe con los vectores ordenados por timestamp
-        distance_destination : float
-            Umbral de distancia al aeropuerto de origen que limita el primer tramo
-        distance_origin : float
-            Umbral de distancia al aeropuerto de destino que inicia el tercer tramo
+        remove_ground_vectors : bool
+            Indica si deben eliminarse los vectores en tierra en el aeropuerto de origen
     '''
+    stats = {}
+    last_vector = None
+
+    
     
     # Asumimos que el primer vector está correctamente ordenado
     data['distance_org'] = haversine_np(data.latitude, data.longitude,
@@ -163,81 +165,92 @@ def sort_by_position(data: pd.DataFrame, stats: dict, remove_ground_vectors: boo
 
     # Eliminamos mensajes en tierra en aeropuerto de origen
     if remove_ground_vectors:
-        min_index = data.ordenInicial.min()
+        min_index = data.index.min()
         st = data.shape[0]
-        data = data[~(data.ground & (data.distance_org < TMA_AREA_MIN))]
+        data = data[~(data.ground & (data.distance_org < TMA_AREA_MIN))].copy()
         stats['dropped_ground'] = st - data.shape[0]
-        corrupt_altitudes_indx = data[(data.altitude.isna() & (data.distance_org < AIRPORT_AREA))].index
-        data.loc[corrupt_altitudes_indx, 'altitude'] = 0
-        data = data.drop('ordenInicial', axis=1).reset_index(drop=True).reset_index().rename({'index':'ordenInicial'}, axis=1)
-        data.index = data.index+min_index
-        data['ordenInicial'] += min_index
+        data.index = np.array(range(data.shape[0])) + min_index
 
-    # Si hay vectores en destino, tomamos el último como punto de referencia
+        data.loc[:,'distance_org'] = haversine_np(data.latitude, data.longitude,
+                                                  data.latitude.iloc[0], data.longitude.iloc[0])
+        
+        # vectores sin altitud en el área del aeropuerto de origen
+        # corrupt_altitudes_indx = data[(data.altitude.isna() & (data.distance_org < AIRPORT_AREA))].index
+        # fijamos a cero el valor de altitud de esos vectores
+        # data.loc[corrupt_altitudes_indx, 'altitude'] = 0
+    
+    data['ordenInicial'] = range(data.shape[0])
+
+    # Si hay vectores en destino, tomamos como último el más cercano al punto de referencia
     # Asumimos que es correcto
     if data[data.distance_dst < AIRPORT_AREA].shape[0]:
-        last_vector = data.loc[data[data.distance_dst < AIRPORT_AREA].timestamp.idxmax()]
-        data['distance_dst'] = haversine_np(data.latitude, data.longitude,
-                                            last_vector.latitude, last_vector.longitude)
+        last_vector = data.loc[data[data.distance_dst < AIRPORT_AREA].distance_dst.idxmin()]
+        data.loc[:,'distance_dst'] = haversine_np(data.latitude, data.longitude,
+                                                  last_vector.latitude, last_vector.longitude)
     
     end_origin_segment = data[data.distance_org<TMA_AREA_MAX].shape[0]
     end_cruise_segment = data[data.distance_dst>TMA_AREA_MAX].shape[0]
-    commited = data[data.distance_dst>TMA_AREA_MIN].shape[0]
+    # commited = data[data.distance_dst>TMA_AREA_MIN].shape[0]
     
     stats['initial'] = distance(data[['latitude','longitude','altitude']].values).sum()
 
     # Rotación del avión en zona de maniobras (cerca del aeropuerto, pero no en la terminal)
     tmp = data[(data.distance_dst.between(TMA_AREA_MIN, TMA_AREA_MAX)) & (data.altitude>0)].copy()
-    tmp = tmp.sort_values(by='timestamp', ascending=True)
+    # tmp = tmp.sort_values(by='timestamp', ascending=True)
     track_variation = calculate_rotation(tmp.track)
-    
-    # Orden inicial por distancia creciente al primer vector de posición
-    # data.loc[:] = data.sort_values(by='distance_org', ascending=True).values
 
-    # Tramo de salida ordenado por distancia creciente al primer vector de posición
+    # Aseguramos que los primeros mensajes son los más cercanos al aeropuerto de origen
+    # Tramo de salida ordenado por timestamp
     # Tramo de crucero ordenado por distancia decreciente al aeropuerto de destino
-    # data.loc[:] = np.concatenate([
-    #     data.iloc[:end_origin_segment].values,
-    #     data.iloc[end_origin_segment:].sort_values(by='distance_dst', ascending=False).values
-    # ])
-    data.iloc[:] = data.iloc[:].sort_values(by='distance_org', ascending=False)
-    data.iloc[end_origin_segment:] = data.iloc[end_origin_segment:].sort_values(by='distance_dst', ascending=False).values
-    data.iloc[end_cruise_segment:-2] = data.iloc[end_cruise_segment:-2].sort_values(by='timestamp').values
+    # Tramo de entrada ordenado por timestamp
+    data.iloc[:] = data.iloc[:].sort_values(by='distance_org').values
+    data.iloc[:end_origin_segment] = data.iloc[:end_origin_segment].sort_values(by='timestamp').values
+    data.iloc[end_origin_segment:end_cruise_segment] = data.iloc[end_origin_segment:end_cruise_segment].sort_values(by='distance_dst', ascending=False).values
+    data.iloc[end_cruise_segment:] = data.iloc[end_cruise_segment:].sort_values(by='timestamp').values
+
+    data['altitude'] = data.altitude.fillna(method='pad')
 
     data = data.drop(['distance_org', 'distance_dst'], axis=1)
 
     # Primer tramo
     windows = generate_windows(data.shape[0], window_size_slow, overlap_slow, 0, end_origin_segment)
-    data.iloc[:] = sort_windows_numpy(data.values, windows, angle=True)
+    data.iloc[:] = sort_windows_numpy(data.values, windows, angle=False)
 
     # Segundo tramo
-    windows = generate_windows(data.shape[0], window_size_fast, overlap_fast, end_origin_segment-5, end_cruise_segment)
+    windows = generate_windows(data.shape[0], window_size_fast, overlap_fast, end_origin_segment, end_cruise_segment)
     data.iloc[:] = sort_windows_numpy(data.values, windows, angle=False)
 
     tmp_data = data.copy()
 
+    last_idx = data.index.get_loc(data[data.vectorId == last_vector.vectorId].iloc[0].name) if not (last_vector is None) else data.shape[0]
+
     # Tercer tramo
     if abs(track_variation) > MAX_ROTATION:
-        # data.iloc[end_cruise_segment+1:-2] = data.iloc[end_cruise_segment+1:-2].sort_values(by='timestamp').values
+        data.iloc[end_cruise_segment+1:-2] = data.iloc[end_cruise_segment+1:-2].sort_values(by='timestamp').values
         print(f'WARNING: Loop múltiple detectado en {data.fpId.iloc[0]}')
     elif abs(track_variation) > SINGLE_LOOP_ROTATION:
         # data.iloc[end_cruise_segment+1:-2] = data.iloc[end_cruise_segment+1:-2].sort_values(by='timestamp').values
-        windows = generate_windows(data.shape[0], window_size_slow, overlap_slow, end_cruise_segment-5, data.shape[0])
+        windows = generate_windows(data.shape[0], window_size_slow, overlap_slow, end_cruise_segment-5, last_idx)
         data.iloc[:] = sort_windows_numpy(data.values, windows, angle=True)
     else:
-        windows = generate_windows(data.shape[0], window_size_slow, overlap_slow, end_cruise_segment-5, data.shape[0])
-        data.iloc[:] = sort_windows_numpy(data.values, windows, angle=False) 
+        windows = generate_windows(data.shape[0], window_size_slow, overlap_slow, end_cruise_segment-5, last_idx)
+        data.iloc[:] = sort_windows_numpy(data.values, windows, angle=False)
+
+    data['ordenFinal'] = range(data.shape[0]) # data.index # 
+    
     final_distance = distance(data[['latitude','longitude','altitude']].values).sum()
     stats['final'] = final_distance
 
-    tmp_distance = distance(tmp_data[['latitude','longitude','altitude']].values).sum()
-    if  tmp_distance < final_distance:
-        data = tmp_data
-        stats['final'] = tmp_distance
+    # tmp_distance = distance(tmp_data[['latitude','longitude','altitude']].values).sum()
+    # if  tmp_distance < final_distance:
+    #     data = tmp_data
+    #     stats['final'] = tmp_distance
     
     stats['rotation'] = track_variation
 
-    return data
+    # print(data[['fpId','timestamp','latitude','longitude','ordenInicial','ordenFinal','distance_org']].head(20)) # [data.ordenInicial!=data.ordenFinal]
+
+    return data, stats
 
 
 def is_resorted(x, acc_list) -> bool:
@@ -328,19 +341,17 @@ def fix_altitude(df: pd.DataFrame):
 
 
 def fix_trajectory(data: pd.DataFrame):
-    stats = {}
-
     data = data.copy()
-    data = sort_by_position(data, stats, remove_ground_vectors=True)
-    data = data.reset_index().rename({'index':'ordenFinal'}, axis=1)
+    data, stats = sort_by_position(data, remove_ground_vectors=True)
+    # data = data.reset_index().rename({'index':'ordenFinal'}, axis=1)
     
     initial = stats.get('initial', -1)
     final = stats.get('final', -1)
     rotation = stats.get('rotation', -1)
     dropped = stats.get('dropped_ground', -1)
     
-    data = fix_timestamp(data)
-    data = fix_altitude(data)
+    # data = fix_timestamp(data)
+    # data = fix_altitude(data)
 
     print(f'{data.fpId.iloc[0]}: {dropped:3} {int(rotation):5}  {initial:8.3f} -> {final:8.3f} ({((final-initial)/initial)*100:6.2f}%)')
 
@@ -348,18 +359,19 @@ def fix_trajectory(data: pd.DataFrame):
         file.write(f'{int(time.time())},{data.flightDate.iloc[0]},{data.fpId.iloc[0]},{dropped},{rotation},{initial},{final},{((final-initial)/initial)*100:.2f}\n')
     
     return data[['vectorId', 'fpId', 'aerodromeOfDeparture', 'latitude', 'longitude', 
-        'fixed_altitude', 'fixed_timestamp', 'ordenInicial', 'ordenFinal',
-        # 'altitude', 'timestamp'
+        # 'fixed_altitude', 'fixed_timestamp', 
+        'ordenInicial', 'ordenFinal',
+        'altitude', 'timestamp'
         ]]
 
 
 def main():
-    date_start, date_end = '2022-10-01', '2022-10-29'
+    date_start, date_end = '2022-09-21', '2022-09-21'
 
     date_start = datetime.datetime.strptime(date_start, '%Y-%m-%d')
     date_end   = datetime.datetime.strptime(date_end,   '%Y-%m-%d')
     dates      = [(date_start + datetime.timedelta(days=x))
-                for x in range((date_end - date_start).days + 1)][:-1]
+                for x in range((date_end - date_start).days + 1)]
     
     with open('bad_trays.txt', 'r', encoding='utf8') as file:
         bad_trays = [x.strip() for x in file.readlines()]
