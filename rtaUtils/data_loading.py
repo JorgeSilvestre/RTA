@@ -23,6 +23,7 @@ def load_raw_data_sort(date: datetime.datetime) -> tuple[pd.DataFrame, pd.DataFr
     data = data[data.longitude.apply(lambda x: -10 < x < 30)
                 & data.latitude.apply(lambda x: 35 < x < 57)]
     data = (data.drop_duplicates(subset=['fpId','timestamp'], keep='first')
+                .dropna(subset=['latitude', 'longitude'])
                 .drop_duplicates(subset=['latitude', 'longitude'], keep='first')
                 .sort_values(by=['fpId','timestamp'])
                 .reset_index(drop=True)

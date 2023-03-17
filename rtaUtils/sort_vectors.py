@@ -15,7 +15,7 @@ warnings.simplefilter("ignore", category=FutureWarning)
 # Test path
 # sorted_data_path = Path('../data/sorted2')
 
-airports = pd.read_csv(airports_file_path, sep = ',')
+airports = pd.read_csv(airports_file_path, sep = ',', usecols=['id','lat','lon'])
 
 cols_sort = ['vectorId', 'fpId', 'flightDate', 'aerodromeOfDeparture', 
              'latitude', 'longitude', 'altitude', 'timestamp', 'track', 'ground']
@@ -156,23 +156,26 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     stats = {}
     last_vector = None
 
-    
+    origin_airport = airports[airports.id == data.iloc[0].aerodromeOfDeparture].iloc[0]
+
+    data['distance_org'] = haversine_np(data.latitude, data.longitude,
+                                        origin_airport.lat, origin_airport.lon)
+    data['distance_dst'] = haversine_np(data.latitude, data.longitude)
     
     # Asumimos que el primer vector está correctamente ordenado
-    data['distance_org'] = haversine_np(data.latitude, data.longitude,
-                                        data.latitude.iloc[0], data.longitude.iloc[0])
-    data['distance_dst'] = haversine_np(data.latitude, data.longitude)
+    # data['distance_org'] = haversine_np(data.latitude, data.longitude,
+    #                                     data.latitude.iloc[0], data.longitude.iloc[0])
+    # data['distance_dst'] = haversine_np(data.latitude, data.longitude)
 
     # Eliminamos mensajes en tierra en aeropuerto de origen
     if remove_ground_vectors:
-        min_index = data.index.min()
+        
         st = data.shape[0]
         data = data[~(data.ground & (data.distance_org < TMA_AREA_MIN))].copy()
         stats['dropped_ground'] = st - data.shape[0]
-        data.index = np.array(range(data.shape[0])) + min_index
-
-        data.loc[:,'distance_org'] = haversine_np(data.latitude, data.longitude,
-                                                  data.latitude.iloc[0], data.longitude.iloc[0])
+        # min_index = data.index.min()
+        # data = data.reset_index(drop=True)
+        # data.index += min_index
         
         # vectores sin altitud en el área del aeropuerto de origen
         # corrupt_altitudes_indx = data[(data.altitude.isna() & (data.distance_org < AIRPORT_AREA))].index
@@ -185,10 +188,11 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     # Asumimos que es correcto
     if data[data.distance_dst < AIRPORT_AREA].shape[0]:
         last_vector = data.loc[data[data.distance_dst < AIRPORT_AREA].distance_dst.idxmin()]
-        data.loc[:,'distance_dst'] = haversine_np(data.latitude, data.longitude,
-                                                  last_vector.latitude, last_vector.longitude)
+        # No hace falta recalcular las distancias al destino
+        # data.loc[:,'distance_dst'] = haversine_np(data.latitude, data.longitude,
+        #                                           last_vector.latitude, last_vector.longitude)
     
-    end_origin_segment = data[data.distance_org<TMA_AREA_MAX].shape[0]
+    end_origin_segment = data[data.distance_org<TMA_AREA_MAX/2].shape[0]
     end_cruise_segment = data[data.distance_dst>TMA_AREA_MAX].shape[0]
     # commited = data[data.distance_dst>TMA_AREA_MIN].shape[0]
     
