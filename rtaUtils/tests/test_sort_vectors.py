@@ -6,7 +6,7 @@ import pytest
 import sys
 sys.path.append(".")
 
-from ..sort_vectors import calculate_rotation, distance
+from ..sort_vectors import calculate_rotation, covered_distance
 
 
 def test_trivial_right():

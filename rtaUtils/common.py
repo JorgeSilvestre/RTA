@@ -46,9 +46,43 @@ def haversine_np(lat1: np.array, lon1: np.array, lat2: np.array = LEMD_LATITUDE,
         p4 = p1 / (np.sqrt(p2*p3))
         angles = np.abs(np.arccos(np.clip(p4,-1.0,1.0)))
         
-        mi2 = mi * np.exp( np.concatenate([[0],angles])/3)
+        mi2 = mi * np.exp( np.concatenate([[0],angles])/2)
 
         return mi2
+    return mi
+
+def haversine_np_track(lat1: np.array, lon1: np.array, lat2: np.array = LEMD_LATITUDE,
+                 lon2: np.array = LEMD_LONGITUDE, track1: np.array = None, track2: np.array = None, 
+                 angle: bool = False) -> np.array:
+    # https://stackoverflow.com/questions/4913349/haversine-formula-in-python-bearing-and-distance-between-two-gps-points
+    """Calculate distances between succesive GPS positions.
+
+    Calculate the great circle distance between segments on the earth. 
+    Input can be provided as arrays of coordinates.
+    All args must be of equal length.
+    
+    Args:
+        lat1, lon1: Latitude and longitude coordinates of initial GPS points.
+        lat2, lon2: Latitude and longitude coordinates of final GPS points.
+        h1, h2: Initial and final altitude values (optional)
+        angle: Determines if direction momentum is introduced, and function acts as
+            a cost function directly proportional to angle variation
+    """    
+    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
+    
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    
+    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
+    c = 2 * np.arcsin(np.sqrt(a))  
+    mi = 3959 * c 
+        
+    if angle:
+        dtrack = track2 - track1
+        dtrack[np.abs(dtrack)>=180] = (dtrack[np.abs(dtrack)>=180] - np.sign(dtrack[np.abs(dtrack)>=180])*360)
+        dtrack = np.absolute(dtrack)
+        mi = mi * np.exp( dtrack.astype('float') / 10)
+        # mi = mi * (1 + 5*dtrack)
     return mi
 
 
