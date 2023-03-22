@@ -4,6 +4,7 @@
 /reports/
 /results/
 /utils/
+/wandb/
 /sort_stats.csv
 
 # Temp data in root directory

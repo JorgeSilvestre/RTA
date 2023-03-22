@@ -12,13 +12,10 @@ from paths import *
 
 warnings.simplefilter("ignore", category=FutureWarning)
 
-# Test path
-# sorted_data_path = Path('../data/sorted2')
-
 airports = pd.read_csv(airports_file_path, sep = ',', usecols=['id','lat','lon'])
 
-cols_sort = ['vectorId', 'fpId', 'flightDate', 'aerodromeOfDeparture',
-             'latitude', 'longitude', 'altitude', 'timestamp', 'track', 'ground']
+# cols_sort = ['vectorId', 'fpId', 'flightDate', 'aerodromeOfDeparture',
+#              'latitude', 'longitude', 'altitude', 'timestamp', 'track', 'ground']
 
 TMA_AREA_MAX = 110
 TMA_AREA_MIN = 30
@@ -34,11 +31,11 @@ overlap_slow     = 75
 window_size_slow = 101
 
 # No se aplican
-max_kchanges = 200
-max_iteraciones = 1000
+# max_kchanges = 200
+max_iteraciones = 100
 
 
-def covered_distance(array: np.array, angle = False) -> np.array:
+def calculate_distance(array: np.array, angle = False) -> np.array:
     array = array.astype('float32')
 
     distances = haversine_np(array[1:,0], array[1:,1],
@@ -105,7 +102,7 @@ def generate_changes(start:int, end:int, skip:int = 1) -> list[tuple[int,int]]:
 def sort_windows(array: np.array, windows: tuple, angle: bool = False) -> np.array:
     for it, start, end in windows:
         data = array[start:end].copy()
-        current_dist = initial_dist = covered_distance(data[:,[4,5,8]], angle).sum()
+        current_dist = initial_dist = calculate_distance(data[:,[4,5,8]], angle).sum()
 
         # Ojo: índices relativos a la ventana, no a data entero
         changes = generate_changes(0, end-start, skip = 2 if angle else 1)
@@ -117,7 +114,7 @@ def sort_windows(array: np.array, windows: tuple, angle: bool = False) -> np.arr
                 candidate = np.concatenate([data[:v1+1],
                                             data[v2:v1:-1],
                                             data[v2+1:]])
-                candidate_dist = covered_distance(candidate[:,[4,5,8]], angle).sum()
+                candidate_dist = calculate_distance(candidate[:,[4,5,8]], angle).sum()
 
                 if candidate_dist < current_dist:
                     improvements += 1
@@ -140,7 +137,7 @@ def calculate_rotation(tracks: pd.Series) -> float:
     return track_variation
 
 
-def sort_nearest_vector(array: np.array, stop: str = 'undefined'):
+def sort_nearest_vector(array: np.array, stop: str = 'undefined') -> np.array:
     '''
     Args:
         array: Array of vector attributes to be sorted
@@ -228,7 +225,7 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     # Segments identification
     end_origin_segment = data[data.distance_org<TMA_AREA_MAX/2].shape[0]
     end_cruise_segment = data[data.distance_dst>TMA_AREA_MAX].shape[0]
-    stats['initial'] = covered_distance(data[['latitude','longitude','track']].values).sum()
+    stats['initial'] = calculate_distance(data[['latitude','longitude','track']].values).sum()
 
     data['ordenInicial'] = range(data.shape[0])
 
@@ -268,16 +265,18 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     # last_idx = data.index.get_loc(data[data.vectorId == last_vector.vectorId].iloc[0].name) if not (last_vector is None) else data.shape[0]
     windows = generate_windows(data.shape[0], window_size_slow, overlap_slow, end_cruise_segment, last_idx) #-2
     if abs(track_variation) > MAX_ROTATION:
-        print(f'WARNING: Loop múltiple detectado en {data.fpId.iloc[0]}')
+        # print(f'WARNING: Loop múltiple detectado en {data.fpId.iloc[0]}')
+        stats['loop'] = 'D'
         data.iloc[:] = sort_windows(data.values, windows, angle=True)
     elif abs(track_variation) > SINGLE_LOOP_ROTATION:
+        stats['loop'] = 'S'
         data.iloc[:] = sort_windows(data.values, windows, angle=True)
     else:
         data.iloc[:] = sort_windows(data.values, windows, angle=False)
 
     data['ordenFinal'] = range(data.shape[0]) # data.index #
 
-    final_distance = covered_distance(data[['latitude','longitude','track']].values).sum()
+    final_distance = calculate_distance(data[['latitude','longitude','track']].values).sum()
     stats['final'] = final_distance
 
     # time_distance=covered_distance(by_time[['latitude','longitude','track']].values).sum()
@@ -295,55 +294,62 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     return data, stats
 
 
-def is_resorted(x, acc_list) -> bool:
-    acc = acc_list[0]
-    if (x.ordenFinal == x.ordenInicial - acc):
-        return False
+def is_resorted(x, acc_list: list) -> bool:
+    found, missing = acc_list
+    removed = []
+    added = None
+    while (x.ordenFinal - (len(found) - len(missing))) in found:
+        removed.append(str(x.ordenFinal - (len(found) - len(missing))))
+        found.remove(x.ordenFinal - (len(found) - len(missing)))
+
+    acc = (len(found) - len(missing))
+    reordenado = False
+    if (x.ordenFinal == x.ordenInicial + acc):
+        reordenado = False
+    elif x.ordenFinal - acc < x.ordenInicial:
+        if x.ordenFinal - acc + 1 == x.ordenInicial: # Falta un vector -> ¿¿cómo generalizar a más de uno??
+            added = x.ordenInicial - 1
+            missing.add(added)
+            reordenado = False
+        else:
+            added = x.ordenInicial
+            found.add(added)
+            reordenado = True
+        # print(f'Added: {added}')
+       
+    elif x.ordenFinal - acc > x.ordenInicial:
+        if x.ordenInicial in missing:
+            missing.remove(x.ordenInicial)
+            reordenado = True
     else:
-        if x.ordenFinal < x.ordenInicial: # Vector posterior insertado aquí
-            acc_list[0] += 1
-            return True
-        # if x.ordenFinal < x.ordenInicial + acc: # Falta un vector, pero este es correcto
-        #     acc_list[0] -= 1
-        #     return False
-        if x.ordenFinal > x.ordenInicial: # Vector anterior insertado aquí
-            acc_list[0] -= 1
-            return True
+        print(' AYMAMAMAMA')
+    
+    # print(f'({x.ordenFinal:3}   {x.ordenInicial:3} | {x.ordenFinal - x.ordenInicial:4})   {len(found) - len(missing):3}' + 
+    #       f'   {x.ordenFinal - x.ordenInicial - len(found) + len(missing):4} {"-["+" ".join(removed)+"]" if removed else ""} {"+["+str(added)+"]" if added else ""} {"x" if reordenado else ""}')
+    # if reordenado: print(acc_list[1])
 
-    # def is_resorted(x, acc_list):
-    # acc = acc_list[0]
-
-    # if (x.ordenFinal == x.ordenInicial + acc):
-    #     return False
-    # else:
-    #     if x.ordenFinal < x.ordenInicial: # Vector posterior insertado aquí
-    #         acc_list[0] += 1
-    #         return True
-    #     elif x.ordenFinal < x.ordenInicial + acc: # Falta un vector, pero este es correcto
-    #         acc_list[0] -= 1
-    #         return False
-    #     elif x.ordenFinal > x.ordenInicial: # Vector anterior insertado aquí
-    #         acc_list[0] += 1
-    #         return True
-
-    return False
+    return reordenado
 
 
-def fix_timestamp(df: pd.DataFrame):
-    # acc como lista para usarlo como objeto mutable y pasarlo por referencia
-    # Evita el uso de una variable global
-    acc = [0]
-
-    df['reordenado'] = df[['ordenFinal','ordenInicial','timestamp']].apply(is_resorted, args=[acc], axis=1)
+def fix_timestamp(df: pd.DataFrame) -> pd.DataFrame:
+    # acc como lista para usarlo como objeto mutable y evitar el uso de una variable global
+    # [found, missing]
+    acc = [set(), set()]
+    
+    df['reordenado'] = df[['ordenFinal','ordenInicial']].astype(int).apply(is_resorted, args=[acc], axis=1) # ,'timestamp'
     df['fixed_timestamp'] = df[~df.reordenado].timestamp
-    # df['fixed_timestamp'] = df['fixed_timestamp'].interpolate(method='linear').astype(int)
 
+    # print(f'Found:   {acc[0]}')
+    # print(f'Missing: {acc[1]}')
+    
     # Usando la distancia recorrida para realizar la interpolación
-    df['fixed_timestamp'] = df.set_index(np.cumsum(covered_distance(df[['latitude','longitude','track']].values))[::-1])['fixed_timestamp']\
-                              .interpolate(method='index').values # limit_area='inside', limit = 5,
+    cum_sum = np.cumsum(calculate_distance(df[['latitude','longitude','track']].values)) # [::-1]
+    df['fixed_timestamp'] = df.set_index(cum_sum)['fixed_timestamp']\
+                              .interpolate(method='index', limit_direction='both').values # limit_area='inside', limit = 5,
 
     try:
         df['fixed_timestamp'] = df['fixed_timestamp'].astype(int)
+        # df['fixed_timestamp'] = np.floor(df['fixed_timestamp'].values)
     except pd.errors.IntCastingNaNError:
         df = df.dropna(subset=['fixed_timestamp'],axis=0).copy()
         print('Caramba!')
@@ -351,8 +357,8 @@ def fix_timestamp(df: pd.DataFrame):
     return df
 
 
-def fix_altitude(df: pd.DataFrame):
-    df['incorrect_altitude'] = False
+def fix_altitude(df: pd.DataFrame) -> pd.DataFrame:
+    df['incorrect_altitude'] = False # df.altitude.isna()
     df['filtered_altitude'] = df.altitude
 
     num_filters = 2
@@ -367,33 +373,34 @@ def fix_altitude(df: pd.DataFrame):
             win_size = 5
 
         df['median_value'] = (df.filtered_altitude # .dropna()
-                               .rolling(win_size, min_periods=3, center=True, closed='both')
-                               .median()).values
+                                .rolling(win_size, min_periods=3, center=True, closed='both')
+                                .median()).values
         df['incorrect_altitude'] = ((abs(df.filtered_altitude-df.median_value) > altitude_threshold) | df['incorrect_altitude']).copy()
-        df.loc[[0,df.index.max()],'incorrect_altitude'] = False
+        df.iloc[[df.index[0], df.index().max()],'incorrect_altitude'] = False
         df['filtered_altitude']  = df[~df.incorrect_altitude].filtered_altitude
 
     # df['interpolated_altitude'] = df['filtered_altitude'].interpolate(method='linear', limit = 3, limit_area='inside')
-    df['interpolated_altitude'] = df.set_index('fixed_timestamp')['filtered_altitude']\
-                                    .interpolate(method='index', limit = 5, limit_area='inside')\
-                                    .values # .reset_index(drop=True)
+    df['interpolated_altitude'] = (df.set_index('fixed_timestamp')['filtered_altitude']
+                                     .interpolate(method='index', limit = 5, limit_area='inside')
+                                     .values) # .reset_index(drop=True)
     df['fixed_altitude'] = df.filtered_altitude.combine_first(df.interpolated_altitude)
 
     return df
 
 
-def fix_trajectory(data: pd.DataFrame):
+def fix_trajectory(data: pd.DataFrame) -> pd.DataFrame:
     data, stats = sort_by_position(data, remove_ground_vectors=True)
 
     initial = stats.get('initial', -1)
     final = stats.get('final', -1)
     rotation = stats.get('rotation', -1)
     dropped = stats.get('dropped_ground', -1)
+    loop = stats.get('loop', " ")
 
-    # data = fix_timestamp(data)
-    # data = fix_altitude(data)
+    data = fix_timestamp(data)
+    data = fix_altitude(data)
 
-    print(f'{data.fpId.iloc[0]}: {dropped:3} {int(rotation):5}  {initial:9.2f} -> {final:8.2f} ({((final-initial)/initial)*100:6.2f}%)')
+    print(f'{data.fpId.iloc[0]}: {dropped:3} {int(rotation):5} {loop}  {initial:9.2f} -> {final:8.2f} ({((final-initial)/initial)*100:6.2f}%)')
 
     with open('sort_stats.csv', 'a+', encoding='utf8') as file:
         file.write(f'{int(time.time())},{data.flightDate.iloc[0]},{data.fpId.iloc[0]},{dropped},{rotation},{initial},{final},{((final-initial)/initial)*100:.2f}\n')
@@ -418,22 +425,21 @@ def main():
     for date in dates:
         try:
             flights = data_loading.load_raw_data_sort(date)
-            # flights = flights[flights.fpId=='AT05522395'] ### TEST
-            # flights = pd.read_parquet('../data/test.parquet')
-        except IndexError:
+            flights = pd.read_parquet('../data/test.parquet')
+
+            # flights = flights[flights.fpId=='AT05516307'] ### TEST  AT05521006
+        except IndexError: # Si no hay datos para el día
             continue
-        indices = data_loading.calculate_indexes(flights)   ## Se puede cambiar por un group by
+        indices = data_loading.calculate_indexes(flights)
         if bad_trays:
             indices = indices[~indices.fpId.isin(bad_trays)]
-
-        
 
         us_data = []
         for i, (fpId, start_index, end_index) in indices.iterrows():
             us_data.append(flights.loc[start_index:end_index].copy())  
             ## OJO: loc->extremo superior inclusivo, iloc->extremo superior exclusivo
 
-        print(f'======== Processing: {date.strftime("%Y-%m-%d")} ({len(us_data)} tray) ========')
+        print(f' Processing: {date.strftime("%Y-%m-%d")} ({len(us_data)} tray) '.center(56,'='))
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=7) as executor:
             result = list(executor.map(fix_trajectory, us_data))
@@ -443,6 +449,7 @@ def main():
             output.to_parquet(sorted_data_path / f'{date.strftime("%Y%m%d")}.parquet')
 
         print('Procesado.')
+
 
 if __name__ == '__main__':
     main()
