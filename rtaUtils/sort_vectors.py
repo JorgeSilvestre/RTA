@@ -6,6 +6,8 @@ import warnings
 import numpy as np
 import pandas as pd
 
+import time
+
 import data_loading
 from common import haversine_np, haversine_np_track
 from paths import *
@@ -296,38 +298,49 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
 
 def is_resorted(x, acc_list: list) -> bool:
     found, missing = acc_list
-    removed = []
-    added = None
-    while (x.ordenFinal - (len(found) - len(missing))) in found:
-        removed.append(str(x.ordenFinal - (len(found) - len(missing))))
-        found.remove(x.ordenFinal - (len(found) - len(missing)))
+    removed, added = [], []
+    # rem_f, rem_m = False, False
+    reordenado = False    
 
-    acc = (len(found) - len(missing))
-    reordenado = False
-    if (x.ordenFinal == x.ordenInicial + acc):
+    f, m = len(found), len(missing)
+    acc = f - m
+    
+    if (x.ordenInicial + len(found) == x.ordenFinal + len(missing)):
         reordenado = False
-    elif x.ordenFinal - acc < x.ordenInicial:
-        if x.ordenFinal - acc + 1 == x.ordenInicial: # Falta un vector -> ¿¿cómo generalizar a más de uno??
-            added = x.ordenInicial - 1
-            missing.add(added)
-            reordenado = False
+        tipo=' '
+    elif (x.ordenInicial + len(found) > x.ordenFinal + len(missing)):
+        tipo = ' '
+        if x.ordenFinal + len(missing) + 1 == x.ordenInicial + len(found):
+            
+            added.append(f'm{x.ordenFinal-len(found)+len(missing)}')
+            missing.add(x.ordenFinal-len(found)+len(missing))
         else:
-            added = x.ordenInicial
-            found.add(added)
-            reordenado = True
-        # print(f'Added: {added}')
-       
-    elif x.ordenFinal - acc > x.ordenInicial:
+            if x.ordenFinal-len(found)+len(missing) not in missing:
+                added.append(f'f{x.ordenInicial}')
+                found.add(x.ordenInicial)
+                reordenado = True
+            elif x.ordenFinal-len(found)+len(missing) in missing:
+                print(f'm{x.ordenFinal-len(found)+len(missing)}')
+                removed.append(f'm{x.ordenFinal-len(found)+len(missing)}')
+                missing.remove(x.ordenFinal-len(found)+len(missing))
+    elif (x.ordenInicial + len(found) < x.ordenFinal + len(missing)):
+        tipo = ' '
         if x.ordenInicial in missing:
+            removed.append(f'm{x.ordenInicial}')
             missing.remove(x.ordenInicial)
             reordenado = True
     else:
-        print(' AYMAMAMAMA')
+        print('Muñaño')    
     
-    # print(f'({x.ordenFinal:3}   {x.ordenInicial:3} | {x.ordenFinal - x.ordenInicial:4})   {len(found) - len(missing):3}' + 
-    #       f'   {x.ordenFinal - x.ordenInicial - len(found) + len(missing):4} {"-["+" ".join(removed)+"]" if removed else ""} {"+["+str(added)+"]" if added else ""} {"x" if reordenado else ""}')
-    # if reordenado: print(acc_list[1])
+    while x.ordenFinal-len(found)+len(missing)+1 in found:
+        removed.append(f'f{x.ordenFinal-len(found)+len(missing)+1}')
+        found.remove(x.ordenFinal-len(found)+len(missing)+1)
 
+    # print(f'{tipo} ({x.ordenFinal:3}  {x.ordenInicial:3} | {x.ordenFinal - x.ordenInicial:4})  {m:>3}|{f:<3}' + #    {acc:3}
+    #       f'   {x.ordenFinal - x.ordenInicial - acc:4}  {"x" if reordenado else " "}  '  +
+    #       f'{" -["+" ".join(removed)+"]" if removed else ""} {"+["+" ".join(added)+"]" if added else ""}')
+    # if reordenado: print('\t', found, missing)
+    
     return reordenado
 
 
@@ -376,7 +389,7 @@ def fix_altitude(df: pd.DataFrame) -> pd.DataFrame:
                                 .rolling(win_size, min_periods=3, center=True, closed='both')
                                 .median()).values
         df['incorrect_altitude'] = ((abs(df.filtered_altitude-df.median_value) > altitude_threshold) | df['incorrect_altitude']).copy()
-        df.iloc[[df.index[0], df.index().max()],'incorrect_altitude'] = False
+        df.loc[[df.index[0], df.index.max()],'incorrect_altitude'] = False # loc o iloc??
         df['filtered_altitude']  = df[~df.incorrect_altitude].filtered_altitude
 
     # df['interpolated_altitude'] = df['filtered_altitude'].interpolate(method='linear', limit = 3, limit_area='inside')
@@ -389,18 +402,26 @@ def fix_altitude(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fix_trajectory(data: pd.DataFrame) -> pd.DataFrame:
-    data, stats = sort_by_position(data, remove_ground_vectors=True)
 
+    # time1 = time.time()
+    data, stats = sort_by_position(data, remove_ground_vectors=True)
+    # time1 = time.time() - time1
+
+    # time2 = time.time()
+    data = fix_timestamp(data)
+    # time2 = time.time() - time2
+    # time3 = time.time()
+    data = fix_altitude(data)
+    # time3 = time.time() - time3
+    
     initial = stats.get('initial', -1)
     final = stats.get('final', -1)
     rotation = stats.get('rotation', -1)
     dropped = stats.get('dropped_ground', -1)
     loop = stats.get('loop', " ")
-
-    data = fix_timestamp(data)
-    data = fix_altitude(data)
-
-    print(f'{data.fpId.iloc[0]}: {dropped:3} {int(rotation):5} {loop}  {initial:9.2f} -> {final:8.2f} ({((final-initial)/initial)*100:6.2f}%)')
+    
+    print(f'{data.fpId.iloc[0]}: {dropped:3} {int(rotation):>4}({loop})  {initial:9.2f} -> {final:8.2f} ({((final-initial)/initial)*100:6.2f}%)')
+    # print(f"Sort: {time1:>2.2f}s   Timestamp: {time2:>2.2f}s   Altitude: {time3:>2.2f}s")
 
     with open('sort_stats.csv', 'a+', encoding='utf8') as file:
         file.write(f'{int(time.time())},{data.flightDate.iloc[0]},{data.fpId.iloc[0]},{dropped},{rotation},{initial},{final},{((final-initial)/initial)*100:.2f}\n')
@@ -427,7 +448,7 @@ def main():
             flights = data_loading.load_raw_data_sort(date)
             flights = pd.read_parquet('../data/test.parquet')
 
-            # flights = flights[flights.fpId=='AT05516307'] ### TEST  AT05521006
+            # flights = flights[flights.fpId==flights.fpId.unique()[3]] ### TEST  AT05521006 AT05516307
         except IndexError: # Si no hay datos para el día
             continue
         indices = data_loading.calculate_indexes(flights)
@@ -450,6 +471,12 @@ def main():
 
         print('Procesado.')
 
+# def main(): # Test de identificación de vectores reordenados
+#     data = pd.read_parquet(sorted_data_path / f'20220921.parquet')
+#     acc = [set(), set()]
+#     data['reordenado'] = data[['ordenFinal','ordenInicial']].astype(int).apply(is_resorted, args=[acc], axis=1) # ,'timestamp'
+#     print(f'Found:   {acc[0]}')
+#     print(f'Missing: {acc[1]}')
 
 if __name__ == '__main__':
     main()
