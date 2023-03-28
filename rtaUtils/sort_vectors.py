@@ -401,10 +401,10 @@ def fix_altitude(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fix_trajectory(data: pd.DataFrame) -> pd.DataFrame:
+def fix_trajectory(data: pd.DataFrame, remove_ground_vectors: bool = True) -> pd.DataFrame:
 
     # time1 = time.time()
-    data, stats = sort_by_position(data, remove_ground_vectors=True)
+    data, stats = sort_by_position(data, remove_ground_vectors=remove_ground_vectors)
     # time1 = time.time() - time1
 
     # time2 = time.time()
@@ -420,7 +420,7 @@ def fix_trajectory(data: pd.DataFrame) -> pd.DataFrame:
     dropped = stats.get('dropped_ground', -1)
     loop = stats.get('loop', " ")
     
-    print(f'{data.fpId.iloc[0]}: {dropped:3} {int(rotation):>4}({loop})  {initial:9.2f} -> {final:8.2f} ({((final-initial)/initial)*100:6.2f}%)')
+    print(f'{data.fpId.iloc[0]}: {dropped:3} {int(rotation):>4}{loop}  {initial:9.2f} -> {final:8.2f} ({((final-initial)/initial)*100:6.2f}%)')
     # print(f"Sort: {time1:>2.2f}s   Timestamp: {time2:>2.2f}s   Altitude: {time3:>2.2f}s")
 
     with open('sort_stats.csv', 'a+', encoding='utf8') as file:
@@ -446,7 +446,7 @@ def main():
     for date in dates:
         try:
             flights = data_loading.load_raw_data_sort(date)
-            flights = pd.read_parquet('../data/test.parquet')
+            # flights = pd.read_parquet('../data/test.parquet')
 
             # flights = flights[flights.fpId==flights.fpId.unique()[3]] ### TEST  AT05521006 AT05516307
         except IndexError: # Si no hay datos para el día

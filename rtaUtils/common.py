@@ -80,8 +80,8 @@ def haversine_np_track(lat1: np.array, lon1: np.array, lat2: np.array = LEMD_LAT
     if angle:
         dtrack = track2 - track1
         dtrack[np.abs(dtrack)>=180] = (dtrack[np.abs(dtrack)>=180] - np.sign(dtrack[np.abs(dtrack)>=180])*360)
-        dtrack = np.absolute(dtrack)
-        mi = mi * np.exp( dtrack.astype('float') / 10)
+        dtrack = np.absolute(dtrack).astype('float')
+        mi = mi * np.exp( dtrack / 2)
         # mi = mi * (1 + 5*dtrack)
     return mi
 
