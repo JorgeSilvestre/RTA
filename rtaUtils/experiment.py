@@ -26,8 +26,8 @@ import paths
 metrics = ['mae','rmse', 'mape', 'stdev', 'mean', 'sample_size']
 report_columns = ['MAE', 'RMSE', 'MAPE', 'StDev', 'Mean', 'Sample']
 
-times = (15, 30, 60, 90, 120, 150, 0)
-# times = (25,45,60,100,125,250)
+DEFAULT_TIMES = (15, 30, 60, 90, 120, 150, 0)
+DEFAULT_DISTANCES = (25,45,60,100,125,250)
 MIN_SAMPLE_SIZE = 5
 
 
@@ -84,13 +84,13 @@ class Experiment:
         To be implemented in child classes."""
         raise NotImplementedError
 
-
     def _format_data(self):
         """Formatting data for use as input to the model 
         
         To be implemented in child classes."""
         raise NotImplementedError
 
+    ### Model loading ##########
 
     def load_model(self, name:str = 'last'):
         """Loads a model checkpoint
@@ -158,40 +158,7 @@ class Experiment:
 
         self.callbacks = [modelCheckpoint, modelCheckpointBest, modelCheckpointLast, csvLogger]
 
-
-    def train(self, epochs: int, from_parquet: bool = False, add_callbacks: list = None): 
-        """Trains the model up to a given number of epochs
-
-        Loads train and validation datasets and trains the model up to a given number of
-        epochs. If the model have already been trained some epochs, the amount of trained 
-        epochs is taken into account
-
-        Args:
-            epochs: Target number of epochs to train the model
-            from_parquet: Boolean to indicate whether the data is loaded from parquet files or TF Datasets
-            add_callbacks: List of callbacks to be added to the model (optional)       
-        """
-        train_dataset = self._load_data('train', from_parquet, randomize=True)
-        val_dataset = self._load_data('val', from_parquet, randomize=False)
-
-        log_epochs = self._check_trained_epochs()
-        if self.trained_epochs != log_epochs:
-            print(f'The number of trained epochs has been updated to {log_epochs}')
-            self.trained_epochs = log_epochs
-    
-        h = self.model.fit(
-                x=train_dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE),
-                validation_data=val_dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE),
-                epochs=epochs,
-                verbose=1,
-                callbacks=self.callbacks + (add_callbacks if add_callbacks else []),
-                initial_epoch=self.trained_epochs)
-                
-        epochs = pd.read_csv(self.model_path_log).epoch.max() + 1
-        self.trained_epochs = epochs
-
-        return h
-    
+    ### Data management ##########
 
     def _load_data(self, dataset: str, from_parquet: bool, randomize: bool) -> tf.data.Dataset:
         """Helper function to load data from parquet
@@ -277,6 +244,42 @@ class Experiment:
         return np.array([i.numpy()[0] for i in dataset.map(lambda x,y: y,
                         num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)])
 
+    ### Training process ##########
+
+    def train(self, epochs: int, from_parquet: bool = False, add_callbacks: list = None): 
+        """Trains the model up to a given number of epochs
+
+        Loads train and validation datasets and trains the model up to a given number of
+        epochs. If the model have already been trained some epochs, the amount of trained 
+        epochs is taken into account
+
+        Args:
+            epochs: Target number of epochs to train the model
+            from_parquet: Boolean to indicate whether the data is loaded from parquet files or TF Datasets
+            add_callbacks: List of callbacks to be added to the model (optional)       
+        """
+        train_dataset = self._load_data('train', from_parquet, randomize=True)
+        val_dataset = self._load_data('val', from_parquet, randomize=False)
+
+        log_epochs = self._check_trained_epochs()
+        if self.trained_epochs != log_epochs:
+            print(f'The number of trained epochs has been updated to {log_epochs}')
+            self.trained_epochs = log_epochs
+    
+        h = self.model.fit(
+                x=train_dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE),
+                validation_data=val_dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE),
+                epochs=epochs,
+                verbose=1,
+                callbacks=self.callbacks + (add_callbacks if add_callbacks else []),
+                initial_epoch=self.trained_epochs)
+                
+        epochs = pd.read_csv(self.model_path_log).epoch.max() + 1
+        self.trained_epochs = epochs
+
+        return h
+    
+    ### Evaluation process ##########
 
     def evaluate(self, from_parquet:bool = False, print_err: bool = True) -> None:
         """Calculates global metrics for validation and test datasets
@@ -403,8 +406,8 @@ class Experiment:
             # dataframe = self._load_data_from_parquet(dataset, randomize=False)
             dataframe = data_loading.load_final_data(self.months, dataset, self.airport, self.sampling)
 
-            for idx, time in enumerate(times):
-                print(f'{dataset}: {idx+1}/{len(times)} Evaluando a {time} minutos     ', end='\r')
+            for idx, time in enumerate(DEFAULT_TIMES):
+                print(f'{dataset}: {idx+1}/{len(DEFAULT_TIMES)} Evaluando a {time} minutos     ', end='\r')
                 ds = data_preparation.get_windows_at_time(dataframe, time, self.lookback, self.encoders,
                                                           self.scaler, self.features)
                 ds = self._format_data(ds)
@@ -442,7 +445,7 @@ class Experiment:
             except TypeError:
                 pass
 
-            for idx2, time in enumerate(times):
+            for idx2, time in enumerate(DEFAULT_TIMES):
                 print(f'({idx+1}/{len(test_airports)}) Evaluando {ap} a {time} minutos' + ' '*30, end='\r')
 
                 ap_ds = data_preparation.get_windows_at_time(airport_data.copy(), time, self.lookback, self.encoders,
@@ -461,6 +464,21 @@ class Experiment:
         #          header=True, encoding='utf8')
         raise NotImplementedError
 
+
+    def predict_trajectory(self, data: pd.DataFrame):
+        # print(data)
+        dataset = data_preparation.get_windows(data, self.lookback, self.encoders, self.scaler, self.features) # +self.lookforward
+        dataset = self._format_data(dataset)
+        predictions = self.model.predict(dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE), verbose=0)
+        predictions = predictions.reshape((-1,len(self.objective_feat)))
+        unsc_predictions = self.scaler.inverse_transform(
+            np.concatenate([np.zeros((predictions.shape[0], len(self.numeric_feat)+len(self.categoric_feat))),
+                            predictions],axis=1)
+            )[:,-len(self.objective_feat):]
+        df = pd.DataFrame(unsc_predictions, columns=self.objective_feat)
+
+        return df
+        
 
 
 class ExperimentVanilla(Experiment):
