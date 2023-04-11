@@ -2,6 +2,8 @@ import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+import math
+from functools import reduce
 from typing import NamedTuple
 
 import joblib
@@ -9,12 +11,9 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from keras.callbacks import CSVLogger, ModelCheckpoint
-from keras.layers import LSTM, GRU, Dense, Input, Bidirectional, Conv1D, MaxPool1D, RepeatVector, TimeDistributed
-from keras.models import Model, Sequential
+from keras.layers import (LSTM, Dense)
+from keras.models import Sequential
 from keras.optimizers import Adam, adamw_experimental
-from functools import reduce
-
-import math
 from sklearn.metrics import (mean_absolute_error,
                              mean_absolute_percentage_error,
                              mean_squared_error)
@@ -22,16 +21,17 @@ from sklearn.metrics import (mean_absolute_error,
 import data_loading
 import data_preparation
 import paths
+import json
 
 metrics = ['mae','rmse', 'mape', 'stdev', 'mean', 'sample_size']
 report_columns = ['MAE', 'RMSE', 'MAPE', 'StDev', 'Mean', 'Sample']
 
 DEFAULT_TIMES = (15, 30, 60, 90, 120, 150, 0)
-DEFAULT_DISTANCES = (25,45,60,100,125,250)
+DEFAULT_DISTANCES = (25, 45, 60, 100, 125, 250)
 MIN_SAMPLE_SIZE = 5
 
 
-ExperimentResult = NamedTuple('ExperimentResult', [('dataset',str), ('feature',str), ('time',str)]+[(x,str) for x in metrics])
+ExperimentResult = NamedTuple('ExperimentResult', [('dataset',str),('feature',str),('time',str)] + [(x,str) for x in metrics])
 
 class Experiment:
     """Base class for RNN experiments
@@ -39,7 +39,7 @@ class Experiment:
     Implements necessary logic, except data formatting and model initialization:
     model loading, data loading (either from parquet or TF Dataset data), and model
     training and evaluation.
-    
+
     Attributes:
         lookback: Length of the sliding window
         sampling: Sampling period used to downsample trajectory data
@@ -53,68 +53,87 @@ class Experiment:
     """
     def __init__(self,
                  lookback: int,
-                 sampling: int,
-                 batch_size: int,
+                 lookforward: int,
                  months: str,
+                 sampling: int,
                  airport: str,
-                 lookforward:int,
-                 features:dict):
+                 batch_size: int,
+                 features: dict):
+        # Model parameters
         self.lookback = lookback
-        self.sampling = sampling
         self.lookforward = lookforward
         self.batch_size = batch_size
+        # Data parameters
         self.months = months
         self.airport = airport
+        self.sampling = sampling
+        # Features
         self.features = features
-        self.numeric_feat = features.get('numeric',None)
-        self.categoric_feat = features.get('categoric',None)
-        self.objective_feat = features.get('objective',None)
+        self.numeric_feat = features.get('numeric', [])
+        self.categoric_feat = features.get('categoric', [])
+        self.objective_feat = features.get('objective', [])
         self.num_features = len(self.numeric_feat) + len(self.categoric_feat)
-
+        # Auxiliar attributes
         self.model = None
         self.trained_epochs = 0
         self.results = {}
+        # Paths
+        self.model_path_save = self.model_path / ('ep{epoch:03d}_loss{loss:.4f}_val{val_loss:.4f}.h5')
+        self.model_path_best = self.model_path / 'best.h5'
+        self.model_path_last = self.model_path / 'last.h5'
+        self.model_path_log  = self.model_path / 'log.csv'
 
         self.encoders = joblib.load(paths.utils_path / f'encoder_{self.num_features}.joblib')
         self.scaler   = joblib.load(paths.utils_path / f'scaler_{self.num_features}.joblib')
 
     def init_model(self):
         """Model initialization
-        
+
         To be implemented in child classes."""
         raise NotImplementedError
 
     def _format_data(self):
-        """Formatting data for use as input to the model 
-        
+        """Formatting data for use as input to the model
+
         To be implemented in child classes."""
         raise NotImplementedError
 
-    ### Model loading ##########
+    ### Model loading ###########################
 
-    def load_model(self, name:str = 'last'):
+    def load_model(self, name: str = 'last'):
         """Loads a model checkpoint
 
         Args:
             name: Name of the model. Can be either 'last', 'best' or a custom file name
         """
         self.model = tf.keras.models.load_model(self.model_path / f'{name}.h5')
-        
-        self.trained_epochs = self._check_trained_epochs()
-        self._init_callbacks()
-        
 
-    def _check_trained_epochs(self):
-        """For resuming training processes
-        
-        Checks the latest checkpoint of the model to set the amount of trained epochs"""
         try:
-            epochs = pd.read_csv(self.model_path_log).epoch.max() + 1
-        except FileNotFoundError:
-            # If log file does not exist
-            return 0
+            logs = pd.read_csv(self.model_path_log)
 
-        return epochs
+            if name == 'last':
+                self.trained_epochs = logs.epoch.max() + 1
+            elif name == 'best':
+                self.trained_epochs = logs.val_loss.argmin() + 1
+            else:
+                self.trained_epochs = int(name.split('_')[0][2:])
+        except FileNotFoundError:
+            self.trained_epochs = 0
+
+        self._init_callbacks()
+
+
+    # def _check_trained_epochs(self) -> int:
+    #     """For resuming training processes
+
+    #     Checks the latest checkpoint of the model to set the amount of trained epochs"""
+    #     try:
+    #         epochs = pd.read_csv(self.model_path_log).epoch.max() + 1
+    #     except FileNotFoundError:
+    #         # If log file does not exist
+    #         return 0
+
+    #     return epochs
 
 
     def _init_callbacks(self):
@@ -158,7 +177,8 @@ class Experiment:
 
         self.callbacks = [modelCheckpoint, modelCheckpointBest, modelCheckpointLast, csvLogger]
 
-    ### Data management ##########
+
+    ### Data management #########################
 
     def _load_data(self, dataset: str, from_parquet: bool, randomize: bool) -> tf.data.Dataset:
         """Helper function to load data from parquet
@@ -178,14 +198,14 @@ class Experiment:
             data = self._load_data_from_dataset(dataset, randomize)
         return self._format_data(data)
 
-    
+
     def _load_data_from_parquet(self, dataset: str, randomize: bool) -> tf.data.Dataset:
         """Helper function to load data from parquet files
 
         Loads and merges the parquet files corresponding to months indicated in self.months.
         Optionally it randomizes data (for instance, for training). Randomization is weighted
         according to month's cardinality to ensure an homogeneous distribution.
-        
+
         Args:
             dataset: The dataset to be loaded. Can be either 'train', 'test' or 'val'
             randomize: Boolean to indicate whether the data should be randomized
@@ -210,7 +230,7 @@ class Experiment:
 
     def _load_data_from_dataset(self, dataset: str, randomize: bool) -> tf.data.Dataset:
         """Helper function to load data from a TF dataset
-        
+
         Loads and merges the TF Datasets corresponding to months indicated in self.months.
         Optionally it randomizes data (for instance, for training). Randomization is weighted
         according to month's cardinality to ensure an homogeneous distribution.
@@ -244,28 +264,37 @@ class Experiment:
         return np.array([i.numpy()[0] for i in dataset.map(lambda x,y: y,
                         num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)])
 
-    ### Training process ##########
 
-    def train(self, epochs: int, from_parquet: bool = False, add_callbacks: list = None): 
+    ### Training process ########################
+
+    def train(self, epochs: int, from_parquet: bool = False, add_callbacks: list = None):
         """Trains the model up to a given number of epochs
 
         Loads train and validation datasets and trains the model up to a given number of
-        epochs. If the model have already been trained some epochs, the amount of trained 
+        epochs. If the model have already been trained some epochs, the amount of trained
         epochs is taken into account
 
         Args:
             epochs: Target number of epochs to train the model
             from_parquet: Boolean to indicate whether the data is loaded from parquet files or TF Datasets
-            add_callbacks: List of callbacks to be added to the model (optional)       
+            add_callbacks: List of callbacks to be added to the model (optional)
         """
         train_dataset = self._load_data('train', from_parquet, randomize=True)
         val_dataset = self._load_data('val', from_parquet, randomize=False)
 
-        log_epochs = self._check_trained_epochs()
-        if self.trained_epochs != log_epochs:
-            print(f'The number of trained epochs has been updated to {log_epochs}')
-            self.trained_epochs = log_epochs
-    
+        try:
+            logs = pd.read_csv(self.model_path_log)
+
+            if self.trained_epochs != logs.shape[0]:
+                logs[logs.epoch<self.trained_epochs].to_csv(self.model_path_log, index=False)
+        except FileNotFoundError:
+            pass
+
+        # log_epochs = self._check_trained_epochs()
+        # if self.trained_epochs != log_epochs:
+        #     print(f'The number of trained epochs has been updated to {log_epochs}')
+        #     self.trained_epochs = log_epochs
+
         h = self.model.fit(
                 x=train_dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE),
                 validation_data=val_dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE),
@@ -273,17 +302,32 @@ class Experiment:
                 verbose=1,
                 callbacks=self.callbacks + (add_callbacks if add_callbacks else []),
                 initial_epoch=self.trained_epochs)
-                
-        epochs = pd.read_csv(self.model_path_log).epoch.max() + 1
-        self.trained_epochs = epochs
+        self.trained_epochs = pd.read_csv(self.model_path_log).epoch.max() + 1
 
         return h
-    
-    ### Evaluation process ##########
+
+
+    ### Prediction ##############################
+
+    def predict_trajectory(self, data: pd.DataFrame):
+        dataset = data_preparation.get_windows(data, self.lookback, self.encoders, self.scaler, self.features) # +self.lookforward
+        dataset = self._format_data(dataset)
+        predictions = self.model.predict(dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE), verbose=0)
+        predictions = predictions.reshape((-1,len(self.objective_feat)))
+        unsc_predictions = self.scaler.inverse_transform(
+            np.concatenate([np.zeros((predictions.shape[0], len(self.numeric_feat)+len(self.categoric_feat))),
+                            predictions],axis=1)
+            )[:,-len(self.objective_feat):]
+        df = pd.DataFrame(unsc_predictions, columns=self.objective_feat)
+
+        return df
+
+
+    ### Evaluation process ######################
 
     def evaluate(self, from_parquet:bool = False, print_err: bool = True) -> None:
         """Calculates global metrics for validation and test datasets
-        
+
         Args:
             from_parquet: Boolean to indicate whether the data is loaded from parquet files or TF Datasets
             print_err: Boolean to indicate if results information should be displayed on screen
@@ -312,17 +356,23 @@ class Experiment:
 
         # real_Y  = (self.get_y(dataset)/self.scaler.scale_[-1]).reshape((-1,))
         real_Y = self.get_y(dataset).reshape(-1,len(self.objective_feat))
-        
+
         sample_size = real_Y.shape[0]
         if sample_size < MIN_SAMPLE_SIZE:
             return {}
-        
+
         scaled = np.concatenate([np.zeros((real_Y.shape[0], self.num_features)),real_Y],axis=1)
         real_Y = self.scaler.inverse_transform(scaled)[:,-len(self.objective_feat):].reshape((-1,len(self.objective_feat)))
 
         pred_Y = self.model.predict(dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE), verbose = print_err).reshape(-1,len(self.objective_feat))
         scaled = np.concatenate([np.zeros((pred_Y.shape[0], self.num_features)),pred_Y],axis=1)
         pred_Y = self.scaler.inverse_transform(scaled)[:,-len(self.objective_feat):].reshape((-1,len(self.objective_feat)))
+
+        print(real_Y.shape)
+        print(real_Y)
+
+        print(pred_Y.shape)
+        print(pred_Y)
 
         metrics_values = {}
         if len(self.objective_feat)>1:
@@ -333,7 +383,7 @@ class Experiment:
         return metrics_values
 
 
-    def _calculate_evaluation_metrics(self, inv_test_Y: np.array, inv_pred_Y: np.array, 
+    def _calculate_evaluation_metrics(self, inv_test_Y: np.array, inv_pred_Y: np.array,
                                       feat: str, prnt: bool = False, name: str = '') -> dict:
         """Calculates and optionally displays metrics given a set of real values and predictions
 
@@ -344,7 +394,7 @@ class Experiment:
         - Standard deviation
         - Mean
         - Sample size
-        
+
         Args:
             inv_test_Y: Array of real values
             inv_pred_Y: Array of predicted values
@@ -388,7 +438,7 @@ class Experiment:
         report_df_long = pd.DataFrame.from_records(res, columns=['dataset','feature','time',*report_columns])
         if mode == 'wide':
             report_df = report_df_long.pivot_table(index=['dataset','feature'], columns=['time'], values=report_columns)
-            report_df.columns = [' '.join((str(y) for y in x)) 
+            report_df.columns = [' '.join((str(y) for y in x))
                                 for x in report_df.columns.to_flat_index()]
             report_df = report_df.reset_index()
 
@@ -399,7 +449,7 @@ class Experiment:
 
     def evaluate_at_times(self):
         """Calculates at-time metrics for validation and test datasets
-        
+
         Data is loaded and formatted on-the-fly from parquet files
         """
         for dataset in ('val','test'):
@@ -420,7 +470,7 @@ class Experiment:
 
     def evaluate_airports(self):
         """Calculates global and at-time metrics for each airport.
-        
+
         Data is loaded and formatted on-the-fly from parquet files
         """
         # test_data = self._load_data_from_parquet('test', randomize=False)
@@ -460,32 +510,17 @@ class Experiment:
 
     def export_results_to_csv(self, mode: str = 'wide'):
         """Pending."""
-        # self.display_evaluation_results(mode).to_csv(f'./results/{self.model_type}_s{self.sampling}_lb{self.lookback}_u{self.n_units}.csv', 
+        # self.display_evaluation_results(mode).to_csv(f'./results/{self.model_type}_s{self.sampling}_lb{self.lookback}_u{self.n_units}.csv',
         #          header=True, encoding='utf8')
         raise NotImplementedError
 
-
-    def predict_trajectory(self, data: pd.DataFrame):
-        # print(data)
-        dataset = data_preparation.get_windows(data, self.lookback, self.encoders, self.scaler, self.features) # +self.lookforward
-        dataset = self._format_data(dataset)
-        predictions = self.model.predict(dataset.batch(self.batch_size).prefetch(tf.data.AUTOTUNE), verbose=0)
-        predictions = predictions.reshape((-1,len(self.objective_feat)))
-        unsc_predictions = self.scaler.inverse_transform(
-            np.concatenate([np.zeros((predictions.shape[0], len(self.numeric_feat)+len(self.categoric_feat))),
-                            predictions],axis=1)
-            )[:,-len(self.objective_feat):]
-        df = pd.DataFrame(unsc_predictions, columns=self.objective_feat)
-
-        return df
-        
 
 
 class ExperimentVanilla(Experiment):
     """Experiments that use vanilla LSTM networks
 
     Implements data formatting and model initialization. Inherits from Experiment class.
-    
+
     Attributes:
         lookback: Length of the sliding window
         sampling: Sampling period used to downsample trajectory data
@@ -501,32 +536,31 @@ class ExperimentVanilla(Experiment):
 
     """
     def __init__(self,
-                 lookback:int,
-                 sampling:int,
-                 model_config:dict,
-                 months:str,
-                 airport:str,
-                 features:dict,
-                 lookforward:int = 0,
-                 model_type:str = None):
-        super().__init__(
-            lookback,
-            sampling,
-            model_config.get('batch_size'),
-            months,
-            airport,
-            lookforward,
-            features)
-
+                 lookback: int,
+                 sampling: int,
+                 model_config: dict,
+                 months: str,
+                 airport: str,
+                 features: dict,
+                 lookforward: int = 0,
+                 model_type: str = None):
         self.model_type = model_type if model_type else 'LSTM'
         self.n_units = model_config.get('n_units')
         self.act_function = model_config.get('act_function', 'tanh')
+        self.loss_function = model_config.get('loss_function', 'mean_absolute_error')
+        self.optimizer = model_config.get('optimizer', 'adam')
 
-        self.model_path = paths.models_path / f'{self.model_type}_s{self.sampling}_lb{self.lookback}_u{self.n_units}'
-        self.model_path_save = self.model_path / ('ep{epoch:03d}_loss{loss:.4f}_val{val_loss:.4f}.h5')
-        self.model_path_best = self.model_path / 'best.h5'
-        self.model_path_last = self.model_path / 'last.h5'
-        self.model_path_log  = self.model_path / 'log.csv'
+        self.model_path = paths.models_path / f'{self.model_type}_s{sampling}_lb{lookback}_u{self.n_units}'
+
+        super().__init__(
+            lookback,
+            lookforward,
+            months,
+            sampling,
+            airport,
+            model_config.get('batch_size', 128),
+            features)
+
 
     def init_model(self, add_metrics = None):
         self.model = Sequential([
@@ -537,15 +571,40 @@ class ExperimentVanilla(Experiment):
             tf.keras.layers.Reshape((len(self.objective_feat),))
         ])
         self.model.compile(
-            loss='mean_absolute_error',
-            optimizer='adam',
+            loss=self.loss_function,
+            optimizer=self.optimizer,
             metrics = ['mean_squared_error'] + (add_metrics if add_metrics else []))
 
         self._init_callbacks()
+        self._write_config()
+
+
+    def _write_config(self):
+        experiment_config = dict(
+            model_type = self.model_type,
+
+            num_units = self.n_units,
+            activation_function = self.act_function,
+            loss_function = self.loss_function,
+            batch_size = self.batch_size,
+
+            lookback = self.lookback,
+            lookforward = self.lookforward,
+            months = self.months,
+            sampling = self.sampling,
+            airport = self.airport,
+
+            features = self.features
+        )
+        if not self.model_path.exists():
+            self.model_path.mkdir()
+        with open(self.model_path / 'experiment_config.json', 'w+') as output_file:
+            json.dump(experiment_config, output_file)
+
 
     def _format_data(self, dataset: tf.data.Dataset) -> tf.data.Dataset:
-        """Formatting data for use as input to the model 
-        
+        """Formatting data for use as input to the model
+
         Uses window data to construct valed examples for the recurrent model.
         """
         return dataset.map(lambda x: (x[:,:-1], x[-1:,-1]))
@@ -556,7 +615,7 @@ class ExperimentTrajectory(Experiment):
     """Experiments that use vanilla LSTM networks
 
     Implements data formatting and model initialization. Inherits from Experiment class.
-    
+
     Attributes:
         lookback: Length of the sliding window
         sampling: Sampling period used to downsample trajectory data
@@ -572,32 +631,31 @@ class ExperimentTrajectory(Experiment):
 
     """
     def __init__(self,
-                 lookback:int,
-                 sampling:int,
-                 model_config:dict,
-                 months:str,
-                 airport:str,
-                 features:dict,
-                 lookforward:int = 1,
-                 model_type:str = None):
-        super().__init__(
-            lookback,
-            sampling,
-            model_config.get('batch_size'),
-            months,
-            airport,
-            lookforward,
-            features)
-
+                 lookback: int,
+                 sampling: int,
+                 model_config: dict,
+                 months: str,
+                 airport: str,
+                 features: dict,
+                 lookforward: int = 1,
+                 model_type: str = None):
         self.model_type = model_type if model_type else 'LSTM'
         self.n_units = model_config.get('n_units')
         self.act_function = model_config.get('act_function', 'tanh')
+        self.loss_function = model_config.get('loss_function', 'mean_absolute_error')
+        self.optimizer = model_config.get('optimizer', 'adam')
 
-        self.model_path = paths.models_path / f'{self.model_type}_s{self.sampling}_lb{self.lookback}_lf{self.lookforward}_u{self.n_units}'
-        self.model_path_save = self.model_path / ('ep{epoch:03d}_loss{loss:.4f}_val{val_loss:.4f}.h5')
-        self.model_path_best = self.model_path / 'best.h5'
-        self.model_path_last = self.model_path / 'last.h5'
-        self.model_path_log  = self.model_path / 'log.csv'
+        self.model_path = paths.models_path / f'{self.model_type}_s{sampling}_lb{lookback}_lf{lookforward}_u{self.n_units}'
+
+        super().__init__(
+            lookback,
+            lookforward,
+            months,
+            sampling,
+            airport,
+            model_config.get('batch_size', 128),
+            features)
+
 
     def init_model(self, add_metrics = None):
         self.model = Sequential([
@@ -608,19 +666,43 @@ class ExperimentTrajectory(Experiment):
             tf.keras.layers.Reshape((self.lookforward, len(self.objective_feat)))
         ])
         self.model.compile(
-            loss='mean_absolute_error',
-            optimizer='adam',
+            loss=self.loss_function,
+            optimizer=self.optimizer,
             metrics = ['mean_squared_error'] + (add_metrics if add_metrics else []))
 
         self._init_callbacks()
+        self._write_config()
+
+
+    def _write_config(self):
+        experiment_config = dict(
+            model_type = self.model_type,
+            num_units = self.n_units,
+            activation_function = self.act_function,
+            loss_function = self.loss_function,
+            batch_size = self.batch_size,
+
+            lookback = self.lookback,
+            lookforward = self.lookforward,
+            months = self.months,
+            sampling = self.sampling,
+            airport = self.airport,
+
+            features = self.features
+        )
+        if not self.model_path.exists():
+            self.model_path.mkdir()
+        with open(self.model_path / 'experiment_config.json', 'w+') as output_file:
+            json.dump(experiment_config, output_file)
+
 
     def _format_data(self, dataset: tf.data.Dataset) -> tf.data.Dataset:
-        """Formatting data for use as input to the model 
-        
+        """Formatting data for use as input to the model
+
         Uses window data to construct valed examples for the recurrent model.
         """
-        return dataset.map(lambda x: (x[:-self.lookforward, :-len(self.objective_feat)], 
-                                      tf.reshape(x[-self.lookforward:, -len(self.objective_feat):], 
+        return dataset.map(lambda x: (x[:-self.lookforward, :-len(self.objective_feat)],
+                                      tf.reshape(x[-self.lookforward:, -len(self.objective_feat):],
                                                  (self.lookforward, len(self.objective_feat)))))
 
 
@@ -669,7 +751,7 @@ def main():
         lookback=lookback,
         sampling=sampling,
         model_config=model_config,
-        months=months, 
+        months=months,
         airport=airport,
         features=feat_dict
     )
