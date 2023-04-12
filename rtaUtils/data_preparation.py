@@ -13,7 +13,7 @@ SHUFFLE_BUFFER_SIZE = 50000 # 25000
 
 def sample_data(dataframe: pd.DataFrame, sampling: int):
     """Sample data based on timestamp using a sampling period
-    
+
     Vectors are divided into buckets of 'sampling' seconds. Only the first
     vector in each bucket is kept.
 
@@ -34,7 +34,7 @@ def identify_gaps(dataframe: pd.DataFrame, desc: str = None) -> np.ndarray:
     Calculates the difference between timestamps of adjacent vectors
 
     In order to ensure time regularity inside of the generated windows,
-    we effectively divide trajectories into segments if gaps longer 
+    we effectively divide trajectories into segments if gaps longer
     than a threshold detected between adjacent vectors. Sliding window
     is applied then on segments, and not on the whole trajectory
 
@@ -52,11 +52,11 @@ def identify_gaps(dataframe: pd.DataFrame, desc: str = None) -> np.ndarray:
         it = tqdm(dataframe[['fpId','timestamp']].groupby('fpId'), desc=desc)
     else:
         it = dataframe[['fpId','timestamp']].groupby('fpId')
-    for i, group in it:     
-        if group.shape[0] > 1:      
+    for i, group in it:
+        if group.shape[0] > 1:
             diffs += [0] + list(np.convolve(group.timestamp.astype('int').values, conv, 'same'))[1:]
         else:
-            # Directly force new segment on flights with only one vector 
+            # Directly force new segment on flights with only one vector
             # (otherwise the convolution operation would fail)
             diffs += [GAP_THRESHOLD + 1]
 
@@ -98,11 +98,11 @@ def get_windows(dataframe: pd.DataFrame, lookback: int, encoders, scaler, featur
     return dataset
 
 
-def get_windows_at_time(dataframe: pd.DataFrame, time: int, lookback: int, 
+def get_windows_at_time(dataframe: pd.DataFrame, time: int, lookback: int,
                         encoders, scaler, features:dict):
-    """Generates the last available window for each trajectory, before a given 
+    """Generates the last available window for each trajectory, before a given
     cutting point (currently, by time before landing)
-    
+
     Args:
         dataframe: Trajectories data
         time: The cutting point (in seconds before landing)
@@ -117,7 +117,7 @@ def get_windows_at_time(dataframe: pd.DataFrame, time: int, lookback: int,
     categoric_feat = features.get('categoric')
     objective = features.get('objective')
 
-    # Pending: Currently, if the window generated from a trajectory contains vectors 
+    # Pending: Currently, if the window generated from a trajectory contains vectors
     # from more than one segment, the trajectory is skipped. We should be able to
     # generate new candidate windows (within the defined threshold) for this trajectory
     # so it is represented in the dataset
@@ -127,7 +127,7 @@ def get_windows_at_time(dataframe: pd.DataFrame, time: int, lookback: int,
     final_data = []
 
     time_data = dataframe[dataframe.RTA>=time*60].copy()          # By time
-    # time_data = dataframe[dataframe.hav_distance>=time].copy()  # By distance  
+    # time_data = dataframe[dataframe.hav_distance>=time].copy()  # By distance
 
     for idx, data in time_data.groupby('fpId'): # ,'segment'
         if data.shape[0] < lookback:
@@ -161,12 +161,12 @@ def get_windows_at_time(dataframe: pd.DataFrame, time: int, lookback: int,
 def generate_save_windows(month: str, lookback: int, sampling: int, features:dict, airport: str = '*' ):
     """Persists windowed data on disk using Tensorflow Dataset API
 
-    This function loads a month's data for all or a given airport, downsamples 
-    the trajectory data and builds the examples using a sliding window of 
+    This function loads a month's data for all or a given airport, downsamples
+    the trajectory data and builds the examples using a sliding window of
     length lookback by calling get_windows function. Then, the results are
-    written into disk to reduce the computational burden during training 
+    written into disk to reduce the computational burden during training
     and evaluation processes
-    
+
     Args:
         month: Month of final data to be loaded, in format 'YYYYMM'
         lookback: Length of the sliding window
