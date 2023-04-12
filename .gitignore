@@ -19,3 +19,5 @@
 __pycache__/
 *.py[cod]
 *$py.class
+rtaUtils/notebook_prueba.ipynb
+rtaUtils/sort_stats.csv

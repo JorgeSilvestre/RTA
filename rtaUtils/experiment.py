@@ -479,7 +479,6 @@ class Experiment:
         raise NotImplementedError
 
 
-
 class ExperimentVanilla(Experiment):
     """Experiments that use vanilla LSTM networks
 
@@ -537,8 +536,10 @@ class ExperimentVanilla(Experiment):
             LSTM(self.n_units,
                  activation=self.act_function,
                  input_shape=(self.lookback, self.num_features)),
-            Dense(len(self.objective_feat)),
-            tf.keras.layers.Reshape((len(self.objective_feat),))
+            # Dense(len(self.objective_feat)),
+            # tf.keras.layers.Reshape((len(self.objective_feat),))
+            Dense((self.lookforward)*len(self.objective_feat)),
+            tf.keras.layers.Reshape((self.lookforward, len(self.objective_feat)))
         ])
         self.model.compile(
             loss=self.loss_function,
@@ -560,6 +561,7 @@ class ExperimentVanilla(Experiment):
 
             lookback = self.lookback,
             lookforward = self.lookforward,
+            shift = self.shift,
             months = self.months,
             sampling = self.sampling,
             airport = self.airport,
@@ -577,8 +579,9 @@ class ExperimentVanilla(Experiment):
 
         Uses window data to construct valed examples for the recurrent model.
         """
-        return dataset.map(lambda x: (x[:,:-1], x[-1:,-1]))
-
+        # return dataset.map(lambda x: (x[:,:-1], x[-1:,-1:]))
+        return dataset.map(lambda x: (x[:self.lookback, :-len(self.objective_feat)],
+                                      x[-self.lookforward:, -len(self.objective_feat):]))
 
 class ExperimentTrajectory(Experiment):
     """Experiments that use vanilla LSTM networks
@@ -609,7 +612,7 @@ class ExperimentTrajectory(Experiment):
                  lookforward: int = 1,
                  shift: int = 0,
                  model_type: str = None):
-        self.model_type = model_type if model_type else 'LSTM'
+        self.model_type = model_type if model_type else 'LSTMtray'
         # Model hyperparameters
         self.n_units = model_config.get('n_units')
         self.act_function = model_config.get('act_function', 'tanh')
@@ -661,6 +664,7 @@ class ExperimentTrajectory(Experiment):
 
             lookback = self.lookback,
             lookforward = self.lookforward,
+            shift = self.shift,
             months = self.months,
             sampling = self.sampling,
             airport = self.airport,
@@ -678,7 +682,7 @@ class ExperimentTrajectory(Experiment):
 
         Uses window data to construct valed examples for the recurrent model.
         """
-        return dataset.map(lambda x: (x[:-self.lookforward-self.shift, :-len(self.objective_feat)],
+        return dataset.map(lambda x: (x[:self.lookback, :-len(self.objective_feat)],
                                       tf.reshape(x[-self.lookforward:, -len(self.objective_feat):],
                                                   (self.lookforward, len(self.objective_feat)))))
 
