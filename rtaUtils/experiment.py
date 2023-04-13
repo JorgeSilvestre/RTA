@@ -203,7 +203,7 @@ class Experiment:
             randomize: Boolean to indicate whether the data should be randomized
         """
         data = data_loading.load_final_data(self.months, dataset, self.airport, self.sampling)
-
+        # data = data[data.hav_distance<500]
         if randomize:
             aps = sorted(data.aerodromeOfDeparture.unique())
             counts = data.aerodromeOfDeparture.value_counts()
@@ -366,13 +366,20 @@ class Experiment:
         pred_Y = pred_Y.reshape((-1, self.lookforward, len(self.objective_feat)))
 
         for idx, feat in enumerate(self.objective_feat):
-            mae   = np.mean(tf.keras.metrics.mean_absolute_error(real_Y[:,:,idx], pred_Y[:,:,idx]))
-            rmse  = np.mean(np.sqrt(tf.keras.metrics.mean_squared_error(real_Y[:,:,idx], pred_Y[:,:,idx])))
-            mape  = np.mean(tf.keras.metrics.mean_absolute_percentage_error(real_Y[:,:,idx], pred_Y[:,:,idx]))
+            mae_calc = tf.keras.metrics.MeanAbsoluteError()
+            mae_calc.update_state(real_Y[:,:,idx], pred_Y[:,:,idx])
+            rmse_calc = tf.keras.metrics.RootMeanSquaredError()
+            rmse_calc.update_state(real_Y[:,:,idx], pred_Y[:,:,idx])
+            mape_calc = tf.keras.metrics.MeanAbsolutePercentageError()
+            mape_calc.update_state(real_Y[:,:,idx], pred_Y[:,:,idx])
+            mean_calc = tf.keras.metrics.Mean()
+            mean_calc.update_state(real_Y[:,:,idx]-pred_Y[:,:,idx])
+
+            mae   = mae_calc.result().numpy()
+            rmse  = rmse_calc.result().numpy()
+            mape  = mape_calc.result().numpy()
             # stdev = (inv_test_Y-inv_pred_Y).std()
-            mean = (real_Y-pred_Y)
-            for i in range(len(real_Y.shape),0,-1):
-                mean  = np.mean(mean, axis=i-1)
+            mean  = mean_calc.result().numpy()
             sample_size = len(real_Y)
 
             if print_err:
@@ -582,6 +589,7 @@ class ExperimentVanilla(Experiment):
         # return dataset.map(lambda x: (x[:,:-1], x[-1:,-1:]))
         return dataset.map(lambda x: (x[:self.lookback, :-len(self.objective_feat)],
                                       x[-self.lookforward:, -len(self.objective_feat):]))
+
 
 class ExperimentTrajectory(Experiment):
     """Experiments that use vanilla LSTM networks

@@ -131,7 +131,7 @@ def sort_windows(array: np.array, windows: tuple, angle: bool = False) -> np.arr
 
 
 def calculate_rotation(tracks: pd.Series) -> float:
-    if tracks.shape[0] == 0:
+    if tracks.shape[0] < 3:
         return 0
     
     # Rotación = Σ Variación de track entre mensajes adyacentes
@@ -147,7 +147,7 @@ def calculate_rotation(tracks: pd.Series) -> float:
 
 def detect_rotation_oscillations(data: pd.Series) -> int:
     # https://stackoverflow.com/a/64747209
-    if data.shape[0] == 0:
+    if data.shape[0] < 3:
         return 0
     
     lat1, lat2 = data.latitude.values[:-1], data.latitude.values[1:]
@@ -220,7 +220,7 @@ def sort_nearest_vector(array: np.array, stop: str = 'undefined') -> np.array:
     return np.concatenate([sorted,unsorted], axis=0)
 
 
-def is_resorted(x, acc_list: list) -> bool:
+def is_resorted(x, acc_list: list, show_log: bool = False) -> bool:
     found, missing = acc_list
     removed, added = [], []
     # rem_f, rem_m = False, False
@@ -234,15 +234,19 @@ def is_resorted(x, acc_list: list) -> bool:
         tipo=' '
     elif (x.ordenInicial + len(found) > x.ordenFinal + len(missing)):
         tipo = ' '
+        # Agregado para resolver múltiples vectores faltantes. Revisar
+        while x.ordenInicial + len(found) > x.ordenFinal + len(missing):
+            added.append(f'm{x.ordenFinal-len(found)+len(missing)}')
+            missing.add(x.ordenFinal-len(found)+len(missing))
+        ###############################################################
         if x.ordenFinal + len(missing) + 1 == x.ordenInicial + len(found):
-            
             added.append(f'm{x.ordenFinal-len(found)+len(missing)}')
             missing.add(x.ordenFinal-len(found)+len(missing))
         else:
             if x.ordenFinal-len(found)+len(missing) not in missing:
                 added.append(f'f{x.ordenInicial}')
                 found.add(x.ordenInicial)
-                reordenado = True
+                # reordenado = True
             elif x.ordenFinal-len(found)+len(missing) in missing:
                 print(f'm{x.ordenFinal-len(found)+len(missing)}')
                 removed.append(f'm{x.ordenFinal-len(found)+len(missing)}')
@@ -259,10 +263,10 @@ def is_resorted(x, acc_list: list) -> bool:
     while x.ordenFinal-len(found)+len(missing)+1 in found:
         removed.append(f'f{x.ordenFinal-len(found)+len(missing)+1}')
         found.remove(x.ordenFinal-len(found)+len(missing)+1)
-
-    # print(f'{tipo} ({x.ordenFinal:3}  {x.ordenInicial:3} | {x.ordenFinal - x.ordenInicial:4})  {m:>3}|{f:<3}' + #    {acc:3}
-    #       f'   {x.ordenFinal - x.ordenInicial - acc:4}  {"x" if reordenado else " "}  '  +
-    #       f'{" -["+" ".join(removed)+"]" if removed else ""} {"+["+" ".join(added)+"]" if added else ""}')
+    if show_log:
+        print(f'{tipo} ({x.ordenFinal:3}  {x.ordenInicial:3} | {x.ordenFinal - x.ordenInicial:4})  {m:>3}|{f:<3}' + #    {acc:3}
+              f'   {x.ordenFinal - x.ordenInicial - acc:4}  {"x" if reordenado else " "}  '  +
+              f'{" -["+" ".join(removed)+"]" if removed else ""} {"+["+" ".join(added)+"]" if added else ""}')
     # if reordenado: print('\t', found, missing)
     
     return reordenado
@@ -378,7 +382,8 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     stats['initial'] = calculate_distance(data[['latitude','longitude','track']].values).sum()
 
     # Aseguramos que los primeros mensajes son los más cercanos al aeropuerto de origen
-    data.iloc[:] = data.iloc[:].sort_values(by='distance_org').values
+    ##### CAMBIAR A ORDENACION POR VECINO CERCANO ???
+    data.iloc[1:] = data.iloc[1:].sort_values(by='distance_org').values
     # Segmento de salida ordenado por NV
     data.iloc[:end_origin_segment] = sort_nearest_vector(data.iloc[:end_origin_segment].values)
     # Segmento de crucero ordenado por distancia decreciente al aeropuerto de destino
@@ -410,17 +415,18 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     windows = generate_windows(data.shape[0], window_size_fast, 
                                overlap_fast, end_origin_segment, end_cruise_segment)
     data.iloc[:] = sort_windows(data.values, windows, angle=False)
-
+    
+    
     # Para descartar reordenación del tercer tramo si el resultado es peor que el inicial
-    # by_time = data.copy()
-    # by_time.iloc[end_cruise_segment:] = by_time.iloc[end_cruise_segment:].sort_values(by='timestamp').values
+    by_time = data.copy()
+    by_time.iloc[end_cruise_segment:] = by_time.iloc[end_cruise_segment:].sort_values(by='timestamp').values
     # by_nearest = data.copy()
 
     # Tercer tramo
     last_idx=data.shape[0]
     # last_idx = data.index.get_loc(data[data.vectorId == last_vector.vectorId].iloc[0].name) if not (last_vector is None) else data.shape[0]
     windows = generate_windows(data.shape[0], window_size_slow, 
-                               overlap_slow, end_cruise_segment, last_idx) 
+                            overlap_slow, end_cruise_segment, last_idx) 
     if abs(track_variation) > HOLDING_ROTATION:
         stats['loop'] = 'D'
         data.iloc[:] = sort_windows(data.values, windows, angle=True)
@@ -430,20 +436,20 @@ def sort_by_position(data: pd.DataFrame, remove_ground_vectors: bool = False) ->
     else:
         data.iloc[:] = sort_windows(data.values, windows, angle=False)
 
-    data['ordenFinal'] = range(data.shape[0])
-
     final_distance = calculate_distance(data[['latitude','longitude','track']].values).sum()
     stats['final'] = final_distance
 
-    # time_distance=covered_distance(by_time[['latitude','longitude','track']].values).sum()
-    # time_presort=covered_distance(by_nearest[['latitude','longitude','track']].values).sum()
+    time_distance=calculate_distance(by_time[['latitude','longitude','track']].values).sum()
+    # time_presort=calculate_distance(by_nearest[['latitude','longitude','track']].values).sum()
     # print(f"{data.fpId.iloc[0]}     Time: {time_distance:8.2f}     \
     #       Pres: {time_presort:8.2f} ({100*(time_presort-time_distance)/time_distance:5.1f}%)     \
     #       TSP: {final_distance:8.2f} ({100*(final_distance-time_distance)/time_distance:5.1f}%)")
 
-    # if  time_distance < final_distance:
-    #     data = by_time
-    #     stats['final'] = time_distance
+    if time_distance < final_distance:
+        data = by_time
+        stats['final'] = time_distance
+
+    data['ordenFinal'] = range(data.shape[0])
 
     return data, stats
 
