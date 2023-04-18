@@ -312,22 +312,23 @@ class Experiment:
 
     ### Evaluation process ######################
 
-    def evaluate(self, from_parquet:bool = False, print_err: bool = True, original_scale: bool = True) -> None:
-        """Calculates global metrics for validation and test datasets
+    def evaluate(self, dataset: str = 'test', from_parquet:bool = False, print_err: bool = True, original_scale: bool = True) -> None:
+        """Calculates global metrics for validation or test datasets
 
         Args:
+            dataset: Dataset to be used. Can be 'test' or 'val'.
             from_parquet: Boolean to indicate whether the data is loaded from parquet files or TF Datasets
             print_err: Boolean to indicate if results information should be displayed on screen
             original_scale: Boolean to indicate whether the results must be shown in their original scale
                 or the scaled-down to (0,1) values
         """
-        val_dataset = self._load_data('val', from_parquet, randomize=False)
-        test_dataset = self._load_data('test', from_parquet, randomize=False)
+        if dataset not in ('test', 'val', 'train'):
+            print('Dataset name is incorrect.')
+            return
 
-        self.results['val all'] =  [ExperimentResult(dataset='val', time='all', feature=k, **v)
-                                    for k, v in self._evaluate_on_dataset(val_dataset, 'val', print_err, original_scale).items()]
-        self.results['test all'] = [ExperimentResult(dataset='test', time='all', feature=k, **v)
-                                    for k, v in self._evaluate_on_dataset(test_dataset, 'test', print_err, original_scale).items()]
+        data = self._load_data(dataset, from_parquet, randomize=False)
+        self.results[f'{dataset} all'] =  [ExperimentResult(dataset=dataset, time='all', feature=k, **v)
+                                    for k, v in self._evaluate_on_dataset(data, dataset, print_err, original_scale).items()]
 
 
     def _evaluate_on_dataset(self, dataset: tf.data.Dataset, name: str = None, print_err: bool = False, original_scale: bool = True) -> dict:
@@ -422,24 +423,23 @@ class Experiment:
             return report_df_long
 
 
-    def evaluate_at_times(self, times: tuple[int] = DEFAULT_TIMES):
-        """Calculates at-time metrics for validation and test datasets
+    def evaluate_at_times(self, dataset: str = 'test', times: tuple[int] = DEFAULT_TIMES):
+        """Calculates at-time metrics for validation or test datasets
 
         Data is loaded and formatted on-the-fly from parquet files
         """
-        for dataset in ('val','test'):
-            dataframe = data_loading.load_final_data(self.months, dataset, self.airport, self.sampling)
+        dataframe = data_loading.load_final_data(self.months, dataset, self.airport, self.sampling)
 
-            for idx, time in enumerate(times):
-                print(f'{dataset}: {idx+1}/{len(times)} Evaluando a {time} minutos     ', end='\r')
-                ds = data_preparation.get_windows_at_time(dataframe, time, self.lookback+self.lookforward+self.shift,
-                                                          self.encoders, self.scaler, self.features)
-                ds = self._format_data(ds)
+        for idx, time in enumerate(times):
+            print(f'{dataset}: {idx+1}/{len(times)} Evaluando a {time} minutos     ', end='\r')
+            ds = data_preparation.get_windows_at_time(dataframe, time, self.lookback+self.lookforward+self.shift,
+                                                        self.encoders, self.scaler, self.features)
+            ds = self._format_data(ds)
 
-                if ds.cardinality().numpy() > MIN_SAMPLE_SIZE:
-                    self.results[f'{dataset} {time}'] =  [ExperimentResult(dataset=dataset, time=time, feature=k, **v)
-                                    for k, v in self._evaluate_on_dataset(ds).items()]
-            print(f'{dataset}: Finalizado' + ' '*50)
+            if ds.cardinality().numpy() > MIN_SAMPLE_SIZE:
+                self.results[f'{dataset} {time}'] =  [ExperimentResult(dataset=dataset, time=time, feature=k, **v)
+                                for k, v in self._evaluate_on_dataset(ds).items()]
+        print(f'{dataset}: Finalizado' + ' '*50)
 
 
     def evaluate_airports(self):
@@ -477,13 +477,6 @@ class Experiment:
                     self.results[f'{ap} {time}'] =  [ExperimentResult(dataset=ap, time=time, feature=k, **v)
                                     for k, v in self._evaluate_on_dataset(ap_ds).items()]
         print(f'({idx+1}/{len(test_airports)})  Done.                        ')
-
-
-    def export_results_to_csv(self, mode: str = 'wide'):
-        """Pending."""
-        # self.display_evaluation_results(mode).to_csv(f'./results/{self.model_type}_s{self.sampling}_lb{self.lookback}_u{self.n_units}.csv',
-        #          header=True, encoding='utf8')
-        raise NotImplementedError
 
 
 class ExperimentVanilla(Experiment):

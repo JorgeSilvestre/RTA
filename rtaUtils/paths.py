@@ -13,5 +13,6 @@ sampled_data_path = Path(f'{base}/data/sampled')
 
 airports_file_path = Path(f'{base}/data/airports.csv')
 
-utils_path  = Path(f'{base}/utils')
-models_path = Path(f'{base}/models')
+utils_path   = Path(f'{base}/utils')
+models_path  = Path(f'{base}/models')
+results_path = Path(f'{base}/results')
