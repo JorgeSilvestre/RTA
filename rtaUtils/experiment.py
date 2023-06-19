@@ -97,13 +97,16 @@ class Experiment:
         To be implemented in child classes."""
         raise NotImplementedError
 
+    def _write_config(self):
+        """Write model configuration file
+
+        To be implemented in child classes."""
+        raise NotImplementedError
 
     ### Model loading ###########################
 
     def load_model(self, name: str = 'last'):
-        """Loads a model checkpoint
-
-        The number of trained epochs is updated accordingly.
+        """Loads a model checkpoint and updates the number of trained epochs.
 
         Args:
             name: Name of the model. Can be either 'last', 'best' or a custom file name
@@ -434,9 +437,11 @@ class Experiment:
             print(f'{dataset}: {idx+1}/{len(times)} Evaluando a {time} minutos     ', end='\r')
             ds = data_preparation.get_windows_at_time(dataframe, time, self.lookback+self.lookforward+self.shift,
                                                         self.encoders, self.scaler, self.features)
+            if ds.cardinality().numpy() < MIN_SAMPLE_SIZE:
+                continue
             ds = self._format_data(ds)
 
-            if ds.cardinality().numpy() > MIN_SAMPLE_SIZE:
+            if ds.cardinality().numpy() >= MIN_SAMPLE_SIZE:
                 self.results[f'{dataset} {time}'] =  [ExperimentResult(dataset=dataset, time=time, feature=k, **v)
                                 for k, v in self._evaluate_on_dataset(ds).items()]
         print(f'{dataset}: Finalizado' + ' '*50)
@@ -528,7 +533,8 @@ class ExperimentVanilla(Experiment):
             features)
 
         self.init_model()
-        self._write_config()
+        if not (self.model_path / 'experiment_config.json').exists():
+            self._write_config()
 
 
     def init_model(self, add_metrics = None):
@@ -633,7 +639,8 @@ class ExperimentTrajectory(Experiment):
             features)
 
         self.init_model()
-        self._write_config()
+        if not (self.model_path / 'experiment_config.json').exists():
+            self._write_config()
 
 
     def init_model(self, add_metrics = None):
